@@ -1,0 +1,33 @@
+{
+	"baseUrl": "http://127.0.0.1:8080/v1",
+	"providerId": "strata-auto",
+	"name": "Strata Auto",
+	"apiKey": "local",
+	"api": "openai-completions",
+	"timeoutMs": 2500,
+	"defaults": {
+		"contextWindow": 65536,
+		"maxTokens": 16384,
+		"reasoning": true,
+		"input": ["text"],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"compat": {
+			"supportsReasoningEffort": true
+		},
+		"thinkingLevelMap": {
+			"off": "none",
+			"minimal": "none",
+			"low": "low",
+			"medium": "medium",
+			"high": "high",
+			"xhigh": "high",
+			"max": "high"
+		}
+	},
+	"models": {}
+}

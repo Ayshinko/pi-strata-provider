@@ -1,0 +1,49 @@
+{
+	"name": "pi-strata-provider",
+	"version": "0.1.0",
+	"description": "A Pi provider extension that dynamically discovers models exposed by a local Strata OpenAI-compatible server.",
+	"type": "module",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-extension",
+		"provider",
+		"strata",
+		"openai-compatible",
+		"model-discovery"
+	],
+	"license": "MIT",
+	"author": "Ayshinko",
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"files": [
+		"src",
+		"config.json",
+		"README.md",
+		"LICENSE"
+	],
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-agent-core": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	},
+	"devDependencies": {
+		"typescript": "^5.7.0",
+		"@types/node": "^24.0.0"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"scripts": {
+		"test": "node --test tests/strata.test.ts",
+		"test:live": "set STRATA_LIVE_TEST=1&& node --test tests/strata.test.ts",
+		"typecheck": "tsc --noEmit"
+	}
+}

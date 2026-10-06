@@ -1,0 +1,17 @@
+# Node / local dev
+node_modules/
+*.log
+npm-debug.log*
+package-lock.json
+
+# Build / editor
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.DS_Store
+.idea/
+.vscode/
+
+# Local scratch
+tmp/

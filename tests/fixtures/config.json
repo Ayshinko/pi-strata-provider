@@ -1,0 +1,13 @@
+{
+	"baseUrl": "http://127.0.0.1:8080/v1",
+	"timeoutMs": 1500,
+	"defaults": {
+		"contextWindow": 100000,
+		"maxTokens": 32000
+	},
+	"models": {
+		"swift-1.5-iq3_xxs": {
+			"contextWindow": 64000
+		}
+	}
+}
