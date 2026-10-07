@@ -11,8 +11,21 @@ export interface Cost {
 
 /** Default metadata applied to every discovered Strata model. */
 export interface ModelDefaults {
-	contextWindow: number;
-	maxTokens: number;
+	/**
+	 * Configured default context window. Optional: it is only used as a last
+	 * resort (precedence 3) when Strata does not report `meta.n_ctx` and there
+	 * is no per-model override. There is intentionally NO hardcoded fallback in
+	 * code — config.json is the single editable source of truth. `undefined`
+	 * means "unavailable", never an invented number.
+	 */
+	contextWindow?: number;
+	/**
+	 * Configured default max output tokens. config.json is the single editable
+	 * source of truth. `undefined` means "unavailable". We NEVER derive it from
+	 * the context window (no /2, /4, 90% formulas) because Strata does not expose
+	 * a reliable max_tokens field.
+	 */
+	maxTokens?: number;
 	reasoning: boolean;
 	input: string[];
 	cost: Cost;
@@ -52,7 +65,14 @@ export interface StrataConfig {
 	models: Record<string, ModelOverride>;
 }
 
-/** Sensible defaults. These are easy to change or override via config.json. */
+/**
+ * Non-limit configuration defaults. Model-limit values (contextWindow,
+ * maxTokens) intentionally have NO hardcoded fallback here: config.json is the
+ * single editable source of truth for maxTokens, and Strata's live `meta.n_ctx`
+ * is preferred for contextWindow. A missing value is left `undefined` so
+ * callers can detect "unavailable" and warn instead of silently inventing a
+ * model-specific limit.
+ */
 export const DEFAULT_CONFIG: StrataConfig = {
 	providerId: "strata-auto",
 	name: "Strata Auto",
@@ -61,8 +81,8 @@ export const DEFAULT_CONFIG: StrataConfig = {
 	api: "openai-completions",
 	timeoutMs: 2500,
 	defaults: {
-		contextWindow: 65536,
-		maxTokens: 16384,
+		contextWindow: undefined,
+		maxTokens: undefined,
 		reasoning: true,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -81,15 +101,20 @@ export const DEFAULT_CONFIG: StrataConfig = {
 };
 
 /**
- * Load the package-local config.json (optional). Missing or invalid values fall
- * back to DEFAULT_CONFIG. Overrides in the JSON are merged over the defaults.
+ * Load the package-local config.json (optional). Missing or invalid values stay
+ * `undefined` rather than falling back to a hardcoded model limit. Overrides in
+ * the JSON are merged over DEFAULT_CONFIG.
  */
 export function loadConfig(configPath?: string): StrataConfig {
 	let raw: unknown;
 	const resolved = configPath ?? resolveDefaultConfigPath();
 	if (resolved && existsSync(resolved)) {
 		try {
-			raw = JSON.parse(readFileSync(resolved, "utf8"));
+			// Strip a UTF-8 BOM (config editors often add one), which otherwise
+			// makes JSON.parse reject valid files and silently falls back to
+			// DEFAULT_CONFIG — turning the editable config.json into a lie.
+			const text = readFileSync(resolved, "utf8").replace(/^\uFEFF/, "");
+			raw = JSON.parse(text);
 		} catch {
 			raw = undefined;
 		}
@@ -127,8 +152,8 @@ function mergeConfig(base: StrataConfig, raw: Record<string, unknown>): StrataCo
 	};
 	if (raw.defaults && typeof raw.defaults === "object") {
 		const d = raw.defaults as Record<string, unknown>;
-		if (d.contextWindow !== undefined) merged.defaults.contextWindow = num(d.contextWindow, base.defaults.contextWindow);
-		if (d.maxTokens !== undefined) merged.defaults.maxTokens = num(d.maxTokens, base.defaults.maxTokens);
+		if (d.contextWindow !== undefined) merged.defaults.contextWindow = numOrUndefined(d.contextWindow);
+		if (d.maxTokens !== undefined) merged.defaults.maxTokens = numOrUndefined(d.maxTokens);
 		if (d.reasoning !== undefined) merged.defaults.reasoning = bool(d.reasoning, base.defaults.reasoning);
 		if (d.input !== undefined && Array.isArray(d.input)) merged.defaults.input = d.input as string[];
 		if (d.cost && typeof d.cost === "object") {
@@ -144,8 +169,8 @@ function mergeConfig(base: StrataConfig, raw: Record<string, unknown>): StrataCo
 			const o = ov as Record<string, unknown>;
 			const override: ModelOverride = {};
 			if (o.name !== undefined) override.name = o.name as string;
-			if (o.contextWindow !== undefined) override.contextWindow = num(o.contextWindow, base.defaults.contextWindow);
-			if (o.maxTokens !== undefined) override.maxTokens = num(o.maxTokens, base.defaults.maxTokens);
+			if (o.contextWindow !== undefined) override.contextWindow = numOrUndefined(o.contextWindow);
+			if (o.maxTokens !== undefined) override.maxTokens = numOrUndefined(o.maxTokens);
 			if (o.reasoning !== undefined) override.reasoning = bool(o.reasoning, base.defaults.reasoning);
 			if (o.input !== undefined && Array.isArray(o.input)) override.input = o.input as string[];
 			if (o.cost && typeof o.cost === "object") override.cost = o.cost as Partial<Cost>;
@@ -166,4 +191,7 @@ function num(v: unknown, fallback: number): number {
 }
 function bool(v: unknown, fallback: boolean): boolean {
 	return typeof v === "boolean" ? v : fallback;
+}
+function numOrUndefined(v: unknown): number | undefined {
+	return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }

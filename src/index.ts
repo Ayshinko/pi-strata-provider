@@ -4,7 +4,7 @@ import type {
 	ProviderConfig,
 	ProviderModelConfig,
 } from "@earendil-works/pi-coding-agent";
-import { buildModels, fetchModelIds, StrataError } from "./discovery.ts";
+import { buildModelsFromCatalog, fetchModelCatalog, isValidLimit, StrataError } from "./discovery.ts";
 import type { DiscoveredModel } from "./discovery.ts";
 import { loadConfig } from "./config.ts";
 import type { StrataConfig } from "./config.ts";
@@ -14,6 +14,27 @@ let config: StrataConfig | null = null;
 let currentModels: DiscoveredModel[] = [];
 let registered = false;
 
+/** Models that have every required numeric limit resolved (safe to register). */
+function registerableModels(models: DiscoveredModel[]): DiscoveredModel[] {
+	return models.filter((m) => isValidLimit(m.contextWindow) && isValidLimit(m.maxTokens));
+}
+
+/** Warn once per model that is missing a required limit (never invent one). */
+function warnUnavailable(models: DiscoveredModel[]): void {
+	for (const m of models) {
+		const missing: string[] = [];
+		if (!isValidLimit(m.contextWindow)) missing.push("context window");
+		if (!isValidLimit(m.maxTokens)) missing.push("max tokens");
+		if (missing.length > 0) {
+			console.warn(
+				`[strata-auto] model "${m.id}" is missing ${missing.join(" and ")} ` +
+					`(not in Strata meta, per-model config, or config.json defaults); it is NOT registered. ` +
+					`Set defaults or a per-model override in config.json to expose it.`,
+			);
+		}
+	}
+}
+
 /** Best-effort discovery. Never throws; reports offline status + last-known models. */
 async function discoverAndStore(): Promise<{
 	models: DiscoveredModel[];
@@ -22,8 +43,9 @@ async function discoverAndStore(): Promise<{
 }> {
 	const cfg = config!;
 	try {
-		const ids = await fetchModelIds(cfg.baseUrl, cfg.timeoutMs);
-		currentModels = buildModels(ids, cfg);
+		const catalog = await fetchModelCatalog(cfg.baseUrl, cfg.timeoutMs);
+		currentModels = buildModelsFromCatalog(catalog, cfg);
+		warnUnavailable(currentModels);
 		return { models: currentModels, offline: false };
 	} catch (err) {
 		const offline = err instanceof StrataError;
@@ -43,16 +65,16 @@ function buildProviderConfig(): ProviderConfig {
 		baseUrl: cfg.baseUrl,
 		apiKey: cfg.apiKey,
 		api: cfg.api as ProviderConfig["api"],
-		models: currentModels as unknown as ProviderModelConfig[],
+		models: registerableModels(currentModels) as unknown as ProviderModelConfig[],
 		refreshModels: async (context) => {
 			// On cache-only initialization, keep the last-known list without a network call.
 			if (context.allowNetwork === false) {
-				return currentModels as unknown as ProviderModelConfig[];
+				return registerableModels(currentModels) as unknown as ProviderModelConfig[];
 			}
 			// Attempt a live refresh. On failure we retain the previous list so a
 			// temporary outage does not wipe the in-memory catalogue.
 			await discoverAndStore();
-			return currentModels as unknown as ProviderModelConfig[];
+			return registerableModels(currentModels) as unknown as ProviderModelConfig[];
 		},
 	};
 }

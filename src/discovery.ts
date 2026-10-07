@@ -5,17 +5,38 @@ import { humanizeModelId } from "./names.ts";
  * A model discovered from Strata's /v1/models endpoint, with the metadata Pi
  * needs, filled in from configurable defaults. Structurally compatible with
  * Pi's ProviderChatModelConfig so the extension can register it directly.
+ *
+ * `contextWindow` and `maxTokens` may be `undefined` when no source of truth
+ * produced a value (no `meta.n_ctx`, no per-model override, no config.json
+ * default). undefined means "unavailable" — callers must warn/skip rather than
+ * invent a limit.
  */
 export interface DiscoveredModel {
 	id: string;
 	name: string;
 	input: string[];
 	reasoning: boolean;
-	contextWindow: number;
-	maxTokens: number;
+	contextWindow: number | undefined;
+	maxTokens: number | undefined;
 	cost: Cost;
 	compat?: Record<string, unknown>;
 	thinkingLevelMap?: Record<string, string>;
+}
+
+/**
+ * A single entry parsed from Strata's /v1/models `data` array. Ids are always
+ * populated; `nCtx` is present only when Strata reports `meta.n_ctx` on the
+ * model (Strata does NOT expose a reliable max_tokens, so we never read one).
+ */
+export interface CatalogModel {
+	id: string;
+	/** meta.n_ctx (context window) reported live by Strata, if any. */
+	nCtx?: number;
+}
+
+/** True when a limit is a finite, positive number (usable for Pi registration). */
+export function isValidLimit(v: unknown): v is number {
+	return typeof v === "number" && Number.isFinite(v) && v > 0;
 }
 
 /** Error thrown when Strata is unreachable or returns an invalid response. */
@@ -27,15 +48,16 @@ export class StrataError extends Error {
 }
 
 /**
- * Fetch the model id list from a Strata OpenAI-compatible server.
- * Throws StrataError on connection problems, timeouts, non-2xx statuses, or
- * invalid JSON/bodies. Callers should catch StrataError to detect offline.
+ * Fetch the model catalogue (ids + optional meta.n_ctx) from a Strata
+ * OpenAI-compatible server. Throws StrataError on connection problems,
+ * timeouts, non-2xx statuses, or invalid JSON/bodies. Callers should catch
+ * StrataError to detect offline.
  */
-export async function fetchModelIds(
+export async function fetchModelCatalog(
 	baseUrl: string,
 	timeoutMs: number,
 	outerSignal?: AbortSignal | null,
-): Promise<string[]> {
+): Promise<CatalogModel[]> {
 	const url = `${baseUrl.replace(/\/+$/, "")}/models`;
 	let response: Response;
 	try {
@@ -66,19 +88,48 @@ export async function fetchModelIds(
 	} catch (err) {
 		throw new StrataError(`Strata /models returned invalid JSON: ${errorMessage(err)}`);
 	}
-	return parseModelIds(json);
+	return parseModelCatalog(json);
 }
 
-/** Extract unique, non-empty model ids from a parsed /v1/models response. */
-export function parseModelIds(json: unknown): string[] {
-	const ids = new Set<string>();
+/** Fetch just the model id list (thin wrapper over fetchModelCatalog). */
+export async function fetchModelIds(
+	baseUrl: string,
+	timeoutMs: number,
+	outerSignal?: AbortSignal | null,
+): Promise<string[]> {
+	const catalog = await fetchModelCatalog(baseUrl, timeoutMs, outerSignal);
+	return catalog.map((m) => m.id);
+}
+
+/** Parse a /v1/models response into unique catalogue entries (ids + meta.n_ctx). */
+export function parseModelCatalog(json: unknown): CatalogModel[] {
+	const byId = new Map<string, CatalogModel>();
 	for (const item of extractDataArray(json)) {
-		if (item && typeof item === "object" && typeof (item as { id?: unknown }).id === "string") {
-			const id = (item as { id: string }).id.trim();
-			if (id.length > 0) ids.add(id);
+		if (!item || typeof item !== "object") continue;
+		const obj = item as { id?: unknown; meta?: unknown };
+		if (typeof obj.id !== "string") continue;
+		const id = obj.id.trim();
+		if (!id) continue;
+		const nCtx = parseNCtx(obj.meta);
+		const existing = byId.get(id);
+		if (!existing) {
+			byId.set(id, nCtx === undefined ? { id } : { id, nCtx });
+		} else if (nCtx !== undefined && existing.nCtx === undefined) {
+			existing.nCtx = nCtx;
 		}
 	}
-	return Array.from(ids);
+	return Array.from(byId.values());
+}
+
+/** Extract just the id list from a /v1/models response. */
+export function parseModelIds(json: unknown): string[] {
+	return parseModelCatalog(json).map((m) => m.id);
+}
+
+function parseNCtx(meta: unknown): number | undefined {
+	if (!meta || typeof meta !== "object") return undefined;
+	const nCtx = (meta as { n_ctx?: unknown }).n_ctx;
+	return isValidLimit(nCtx) ? nCtx : undefined;
 }
 
 function extractDataArray(json: unknown): unknown[] {
@@ -92,19 +143,44 @@ function extractDataArray(json: unknown): unknown[] {
 
 /**
  * Build Pi-ready model definitions for the given ids, applying configurable
- * defaults and any per-model overrides.
+ * defaults, per-model overrides, and — where available — Strata's live
+ * `meta.n_ctx`. No limit is invented when the sources are exhausted.
  */
 export function buildModels(ids: readonly string[], cfg: StrataConfig): DiscoveredModel[] {
+	return buildModelsFromCatalog(ids.map((id) => ({ id })), cfg);
+}
+
+/**
+ * Build Pi-ready model definitions from the full Strata catalogue, applying
+ * the documented precedence rules.
+ *
+ * CONTEXT WINDOW:
+ *   1. live Strata meta.n_ctx
+ *   2. per-model config override
+ *   3. config.json defaults.contextWindow
+ *
+ * MAX OUTPUT TOKENS:
+ *   1. per-model config override maxTokens
+ *   2. config.json defaults.maxTokens
+ *   (never derived from n_ctx / contextWindow — Strata exposes no max_tokens)
+ */
+export function buildModelsFromCatalog(
+	catalog: readonly CatalogModel[],
+	cfg: StrataConfig,
+): DiscoveredModel[] {
 	const defaults = cfg.defaults;
-	return ids.map((id) => {
+	return catalog.map((entry) => {
+		const id = entry.id;
 		const ov = cfg.models?.[id];
+		const contextWindow = entry.nCtx ?? ov?.contextWindow ?? defaults.contextWindow;
+		const maxTokens = ov?.maxTokens ?? defaults.maxTokens;
 		return {
 			id,
 			name: ov?.name ?? humanizeModelId(id),
 			input: ov?.input ?? defaults.input,
 			reasoning: ov?.reasoning ?? defaults.reasoning,
-			contextWindow: ov?.contextWindow ?? defaults.contextWindow,
-			maxTokens: ov?.maxTokens ?? defaults.maxTokens,
+			contextWindow,
+			maxTokens,
 			cost: { ...defaults.cost, ...(ov?.cost ?? {}) },
 			compat: ov?.compat ?? defaults.compat,
 			thinkingLevelMap: ov?.thinkingLevelMap ?? defaults.thinkingLevelMap,
